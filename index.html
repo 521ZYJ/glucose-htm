@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>血糖健康检测可视化</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand">
+      <div>
+        <h1>血糖健康检测可视化</h1>
+        <p class="subtitle">实时监测 · 趋势预测 · 智能健康建议</p>
+      </div>
+      <nav class="nav-links" aria-label="主导航">
+        <a href="#overview">今日概览</a>
+        <a href="#trend">趋势分析</a>
+        <a href="#history">历史记录</a>
+      </nav>
+    </div>
+    <div class="badge badge-shu" aria-label="上海大学校徽">
+      <img src="xiaohui.png" alt="上海大学校徽">
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- 今日概览与控制区 -->
+    <section class="card highlight" id="overview" aria-label="当前血糖">
+      <div class="card-header-line">
+        <div class="card-title">当前血糖概览</div>
+        <div class="range-label" id="rangeTag">范围评估：--</div>
+      </div>
+      <div class="current-row">
+        <div class="current-main">
+          <span class="current-value" id="currentGlucose">--.--</span>
+          <span class="unit">mg/dL</span>
+        </div>
+        <div class="current-extra">
+          <div class="status">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="dataSourceStatus">数据源：模拟数据（初始化中）</span>
+          </div>
+          <div class="timestamp" id="lastUpdateTime">最近更新：--:--</div>
+        </div>
+      </div>
+      <p class="note-text">
+        提示：数值仅为示例模拟数据，不作为医疗诊断依据。如有异常请及时咨询医生。
+      </p>
+    </section>
+
+    <section class="card controls" aria-label="监测控制">
+      <div class="card-title">监测控制与数据管理</div>
+      <div class="controls-row">
+        <button id="toggleRunBtn" class="primary-button toggle-button is-paused" data-state="paused">开始</button>
+        <button id="saveSnapshotBtn" class="primary-outline-button">保存当前数据</button>
+        <button id="viewHistoryBtn" class="ghost-button">查看历史记录</button>
+      </div>
+      <div class="controls-row">
+        <label class="inline-label">
+          数据来源
+          <select id="sourceSelect">
+            <option value="simulated">模拟数据（本页内置）</option>
+            <option value="bluetooth" disabled>蓝牙设备（待接入）</option>
+            <option value="wifi" disabled>WiFi 设备（待接入）</option>
+          </select>
+        </label>
+        <button id="clearHistoryBtn" class="secondary-button">清空本地记录</button>
+      </div>
+      <p class="note-text small">
+        说明：开始/暂停共用一个按键；模拟数据时开始即启动循环生成，暂停即停止。蓝牙/WiFi 模式将作为未来接入方案。
+      </p>
+    </section>
+
+    <!-- 趋势与预测 -->
+    <section class="card chart-card" id="trend" aria-label="历史血糖曲线">
+      <div class="card-title">历史血糖趋势</div>
+      <p class="section-desc">展示最近一段时间的血糖曲线及预测延伸，用于观察波动情况。</p>
+      <div class="chart-wrapper">
+        <canvas id="glucoseChart" aria-label="血糖曲线图"></canvas>
+      </div>
+    </section>
+
+    <section class="card predictions" aria-label="血糖预测">
+      <div class="card-title">未来血糖预测</div>
+      <p class="section-desc">基于最近一段时间的变化趋势，给出未来 30 分钟与 60 分钟的估计值。</p>
+      <div class="prediction-grid">
+        <div class="prediction-item">
+          <div class="label">30 分钟后</div>
+          <div class="value" id="forecast30">--.--</div>
+          <div class="sub-label" id="forecast30Tag">趋势：--</div>
+        </div>
+        <div class="prediction-item">
+          <div class="label">60 分钟后</div>
+          <div class="value" id="forecast60">--.--</div>
+          <div class="sub-label" id="forecast60Tag">趋势：--</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 健康建议与指标说明 -->
+    <section class="card advice" aria-label="健康建议">
+      <div class="card-title">智能健康建议</div>
+      <div id="healthAdvice">
+        根据当前血糖与未来趋势生成个性化建议，初始化中…
+      </div>
+      <hr class="divider">
+      <div class="reference-info">
+        <h3>参考区间说明（示意）</h3>
+        <ul>
+          <li>偏低（&lt; 70 mg/dL）：可能存在低血糖风险，请注意及时补糖并咨询医生。</li>
+          <li>建议范围（约 70 ~ 180 mg/dL）：相对平稳状态，具体以医生建议为准。</li>
+          <li>偏高（&gt; 180 mg/dL）：血糖偏高，需关注饮食、运动和用药情况。</li>
+        </ul>
+        <p class="note-text small">
+          上述区间仅为示意，具体诊疗指标请遵循专业医疗机构意见。
+        </p>
+      </div>
+    </section>
+
+    <!-- 历史记录 -->
+    <section class="card history" id="history" aria-label="历史记录">
+      <div class="card-header-line">
+        <div class="card-title">本地历史记录</div>
+        <button id="toggleHistoryBtn" class="ghost-button ghost-small">折叠/展开</button>
+      </div>
+      <p class="section-desc">
+        点击“保存当前数据”后，将在下方生成一条记录，保存在当前浏览器中，便于复盘波动情况。
+      </p>
+      <div class="history-table-wrapper" id="historyTableWrapper">
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>血糖值（mmol/L）</th>
+              <th>预测 30min</th>
+              <th>预测 60min</th>
+              <th>数据来源</th>
+            </tr>
+          </thead>
+          <tbody id="historyBody">
+            <!-- 由脚本填充 -->
+          </tbody>
+        </table>
+        <div class="history-empty" id="historyEmptyHint">
+          暂无保存记录，可先点击上方“保存当前数据”。
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>
+      提示：当前页面使用模拟数据进行血糖监测与预测演示，所有内容仅供学习与界面展示使用，不能替代专业医疗建议。
+    </p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
