@@ -79,6 +79,9 @@
       <div class="chart-wrapper">
         <canvas id="glucoseChart" aria-label="血糖曲线图"></canvas>
       </div>
+      <div class="chart-controls">
+        <input type="range" id="windowSlider" min="0" max="1320" step="30" value="1320" />
+      </div>
     </section>
 
     <section class="card predictions" aria-label="血糖预测">
@@ -144,6 +147,33 @@
         </table>
         <div class="history-empty" id="historyEmptyHint">
           暂无保存记录，可先点击上方“保存当前数据”。
+        </div>
+      </div>
+    </section>
+
+    <!-- 危险血糖记录 -->
+    <section class="card danger-log" aria-label="危险血糖记录">
+      <div class="card-header-line">
+        <div class="card-title">危险血糖记录</div>
+        <button id="clearDangerBtn" class="ghost-button ghost-small">清空危险记录</button>
+      </div>
+      <p class="section-desc">当当前血糖偏低或偏高时自动记录，便于后续复盘。</p>
+      <div class="history-table-wrapper">
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>血糖值（mg/dL）</th>
+              <th>预测 30min</th>
+              <th>预测 60min</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody id="dangerBody">
+          </tbody>
+        </table>
+        <div class="history-empty" id="dangerEmptyHint">
+          目前没有记录到偏低或偏高的血糖事件。
         </div>
       </div>
     </section>
