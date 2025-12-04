@@ -1,5 +1,6 @@
-// 血糖监测前端逻辑：模拟数据、预测、图表、历史与危险记录
+// 前端逻辑（改为从本地后端获取数据并同步历史/危险记录）
 document.addEventListener("DOMContentLoaded", () => {
+  const API_BASE = "http://10.89.205.185:3000";
   const $ = (id) => document.getElementById(id);
 
   // UI 元素
@@ -30,29 +31,24 @@ document.addEventListener("DOMContentLoaded", () => {
   const clearDangerBtn = $("clearDangerBtn");
 
   // 常量与状态
-  const STEP_MINUTES = 5; // 逻辑时间步长
-  const STEP_MS = STEP_MINUTES * 60 * 1000;
-  const SIM_INTERVAL_MS = 10_000; // 实际模拟间隔
-  const RETAIN_MINUTES = 1440; // 数据保留 24h
-  const BASELINE = 110;
+  const VIEW_WINDOW = 120; // 2 小时固定窗口
+  const VIEW_MAX_BACK = 1440 - VIEW_WINDOW;
+  const SLIDER_MAX = 1320;
   const MIN_VAL = 60;
   const MAX_VAL = 220;
-  const HISTORY_KEY = "glucoseHistory";
-  const DANGER_KEY = "glucoseDangerHistory";
-  const VIEW_WINDOW = 120; // 固定窗口大小（分钟）
-  const VIEW_MAX_BACK = 1440 - VIEW_WINDOW; // 最多回看 24h-窗口
-  const SLIDER_MAX = 1320; // 24h-2h
 
-  const dataPoints = []; // { ts, value }
-  let simTimer = null;
-  let latestPreds = null;
-  let viewBackMinutes = 0; // 0 表示最新，越大越往历史查看
+  let viewBackMinutes = 0; // 0=最新
   let lastRenderSnapshot = null;
-  let historyCollapsed = false;
+  let latestPreds = null;
+  let dataPoints = [];
+  let simTimer = null;
 
   // 工具
   const pad2 = (n) => String(n).padStart(2, "0");
-  const formatTime = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  const formatTime = (ts) => {
+    const d = new Date(ts);
+    return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  };
   const formatDateTime = (ts) => {
     const d = new Date(ts);
     return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(
@@ -61,7 +57,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
   const clamp = (v, min, max) => Math.min(Math.max(v, min), max);
 
-  // 状态显示
+  // UI 状态
   const setButtonState = (state) => {
     toggleRunBtn.dataset.state = state;
     if (state === "running") {
@@ -77,63 +73,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const setStatusDot = (state) => {
     statusDot.style.background = state === "running" ? "#22c55e" : "#cbd5e0";
   };
-  const updateStatusText = (state) => {
-    const src = sourceSelect.value;
-    if (src === "simulated") {
-      dataSourceStatus.textContent = `数据源：模拟数据（${state === "running" ? "运行中" : "已暂停"}）`;
-    } else if (src === "bluetooth") {
-      dataSourceStatus.textContent = "数据源：蓝牙设备（等待接入）";
-    } else if (src === "wifi") {
-      dataSourceStatus.textContent = "数据源：WiFi 设备（等待接入）";
-    }
-  };
-
-  // 模拟与预测
-  const computeNextValue = (prev) => {
-    const drift = (Math.random() - 0.5) * 12;
-    const trend = (Math.random() - 0.5) * 4;
-    return Number(clamp(prev + drift + trend, MIN_VAL, MAX_VAL).toFixed(1));
-  };
-
-  const computePredictions = () => {
-    if (dataPoints.length < 2) return null;
-    const windowSize = Math.min(12, dataPoints.length);
-    const slice = dataPoints.slice(-windowSize);
-    const first = slice[0];
-    const last = slice[slice.length - 1];
-    const minutes = Math.max((last.ts - first.ts) / 60000, 1);
-    const slope = (last.value - first.value) / minutes; // mg/dL per min
-    const p30 = clamp(last.value + slope * 30, MIN_VAL, MAX_VAL);
-    const p60 = clamp(last.value + slope * 60, MIN_VAL, MAX_VAL);
-    const trendText = slope > 0.25 ? "上升" : slope < -0.25 ? "下降" : "平稳";
-    return {
-      list: [
-        { ts: last.ts + 30 * 60 * 1000, value: p30, label: "30min", color: "#a855f7" },
-        { ts: last.ts + 60 * 60 * 1000, value: p60, label: "60min", color: "#f97316" },
-      ],
-      trend: trendText,
-      slope,
-    };
-  };
-
-  const updateForecastUI = (preds) => {
-    if (!preds) {
-      forecast30.textContent = "--.--";
-      forecast60.textContent = "--.--";
-      forecast30Tag.textContent = "趋势：--";
-      forecast60Tag.textContent = "趋势：--";
-      return;
-    }
-    const [p30, p60] = preds.list;
-    forecast30.textContent = p30.value.toFixed(1);
-    forecast60.textContent = p60.value.toFixed(1);
-    const trendLabel =
-      preds.trend === "上升" ? "轻度上升" : preds.trend === "下降" ? "轻度下降" : "相对平稳";
-    forecast30Tag.textContent = `趋势：${trendLabel}`;
-    forecast60Tag.textContent = `趋势：${trendLabel}`;
-  };
-
-  // 建议与范围
   const updateRangeTag = (val) => {
     if (val < 70) {
       rangeTag.textContent = "范围评估：偏低";
@@ -150,88 +89,25 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   };
 
-  const buildAdvice = (currentVal, preds) => {
-    const p30 = preds?.list?.[0]?.value;
-    const p60 = preds?.list?.[1]?.value;
-    const values = [currentVal, p30, p60].filter((v) => typeof v === "number");
-    if (!values.length) return "正在获取数据…";
-    const maxVal = Math.max(...values);
-    const minVal = Math.min(...values);
-
-    if (minVal < 70) {
-      return "当前或即将出现低血糖风险，请及时补充碳水化合物，并联系医生确认处理方案。";
-    }
-    if (maxVal > 180) {
-      return "血糖偏高或将升高，请关注饮食和运动，按医嘱用药或咨询医生。";
-    }
-    if (values.every((v) => v >= 80 && v <= 150)) {
-      return "血糖相对平稳，建议保持当前生活方式，并按时监测。";
-    }
-    return "血糖处于可接受范围内，建议继续观察，并保持良好作息与饮食习惯。";
+  // 数据请求
+  const fetchData = async () => {
+    const src = sourceSelect.value;
+    const res = await fetch(`${API_BASE}/api/data?source=${src}`);
+    const json = await res.json();
+    dataPoints = json.points || [];
+    latestPreds = json.preds || null;
+    const last = json.current || dataPoints[dataPoints.length - 1];
+    if (!last) return;
+    updateOverview(last.value, last.ts);
+    updateForecastUI(latestPreds);
+    advice.textContent = json.advice || "正在获取数据…";
+    dataSourceStatus.textContent = json.status || "数据源";
+    renderChart(getVisiblePoints(), latestPreds);
   };
 
-  // 数据记录
-  const pruneOld = () => {
-    const latestTs = dataPoints.length ? dataPoints[dataPoints.length - 1].ts : Date.now();
-    const cutoff = latestTs - RETAIN_MINUTES * 60 * 1000;
-    while (dataPoints.length && dataPoints[0].ts < cutoff) dataPoints.shift();
-  };
-
-  const getViewWindow = () => {
-    if (!dataPoints.length) return null;
-    const last = dataPoints[dataPoints.length - 1].ts;
-    const earliest = dataPoints[0].ts;
-    let windowEnd = last - viewBackMinutes * 60 * 1000;
-    let windowStart = windowEnd - VIEW_WINDOW * 60 * 1000;
-    if (windowStart < earliest) {
-      windowStart = earliest;
-      windowEnd = windowStart + VIEW_WINDOW * 60 * 1000;
-    }
-    return { start: windowStart, end: windowEnd };
-  };
-
-  const getVisiblePoints = () => {
-    const range = getViewWindow();
-    if (!range) return [];
-    return dataPoints.filter((p) => p.ts >= range.start && p.ts <= range.end);
-  };
-
-  // 历史与危险记录存取
-  const loadHistory = () => {
-    try {
-      const raw = localStorage.getItem(HISTORY_KEY);
-      return raw ? JSON.parse(raw) : [];
-    } catch (e) {
-      console.warn("加载历史记录失败", e);
-      return [];
-    }
-  };
-  const saveHistory = (list) => {
-    try {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
-    } catch (e) {
-      console.warn("保存历史记录失败", e);
-    }
-  };
-  const loadDanger = () => {
-    try {
-      const raw = localStorage.getItem(DANGER_KEY);
-      return raw ? JSON.parse(raw) : [];
-    } catch (e) {
-      console.warn("加载危险记录失败", e);
-      return [];
-    }
-  };
-  const saveDanger = (list) => {
-    try {
-      localStorage.setItem(DANGER_KEY, JSON.stringify(list));
-    } catch (e) {
-      console.warn("保存危险记录失败", e);
-    }
-  };
-
-  const renderHistory = () => {
-    const list = loadHistory();
+  const fetchHistory = async () => {
+    const res = await fetch(`${API_BASE}/api/history`);
+    const list = await res.json();
     if (!list.length) {
       historyBody.innerHTML = "";
       historyEmptyHint.style.display = "block";
@@ -241,13 +117,14 @@ document.addEventListener("DOMContentLoaded", () => {
     historyBody.innerHTML = list
       .map(
         (item) =>
-          `<tr><td>${formatDateTime(item.ts)}</td><td>${item.value.toFixed(1)}</td><td>${item.f30 ?? "--"}</td><td>${item.f60 ?? "--"}</td><td>${item.source || "N/A"}</td></tr>`
+          `<tr><td>${formatDateTime(item.ts)}</td><td>${item.value?.toFixed?.(1) ?? "--"}</td><td>${item.f30 ?? "--"}</td><td>${item.f60 ?? "--"}</td><td>${item.source || "N/A"}</td></tr>`
       )
       .join("");
   };
 
-  const renderDanger = () => {
-    const list = loadDanger();
+  const fetchDanger = async () => {
+    const res = await fetch(`${API_BASE}/api/danger`);
+    const list = await res.json();
     if (!list.length) {
       dangerBody.innerHTML = "";
       dangerEmptyHint.style.display = "block";
@@ -257,36 +134,71 @@ document.addEventListener("DOMContentLoaded", () => {
     dangerBody.innerHTML = list
       .map(
         (item) =>
-          `<tr><td>${formatDateTime(item.ts)}</td><td>${item.value.toFixed(1)}</td><td>${item.f30 ?? "--"}</td><td>${item.f60 ?? "--"}</td><td>${item.status}</td></tr>`
+          `<tr><td>${formatDateTime(item.ts)}</td><td>${item.value?.toFixed?.(1) ?? "--"}</td><td>${item.f30 ?? "--"}</td><td>${item.f60 ?? "--"}</td><td>${item.status || "异常"}</td></tr>`
       )
       .join("");
   };
 
-  const checkAndLogDanger = (currentVal, preds) => {
-    const isLow = currentVal < 70;
-    const isHigh = currentVal > 180;
-    const p30 = preds?.list?.[0]?.value;
-    const p60 = preds?.list?.[1]?.value;
-    const futureLow = (typeof p30 === "number" && p30 < 70) || (typeof p60 === "number" && p60 < 70);
-    const futureHigh = (typeof p30 === "number" && p30 > 180) || (typeof p60 === "number" && p60 > 180);
-    const status = isLow || futureLow ? "偏低" : isHigh || futureHigh ? "偏高" : null;
-    if (!status) return;
-    const entry = {
-      ts: Date.now(),
-      value: currentVal,
-      f30: preds?.list?.[0]?.value ? preds.list[0].value.toFixed(1) : "--",
-      f60: preds?.list?.[1]?.value ? preds.list[1].value.toFixed(1) : "--",
-      status,
-    };
-    const list = loadDanger();
-    list.push(entry);
-    saveDanger(list);
-    renderDanger();
+  const saveSnapshot = async () => {
+    if (!dataPoints.length) return;
+    const last = dataPoints[dataPoints.length - 1];
+    const p30 = latestPreds?.list?.[0]?.value ? latestPreds.list[0].value.toFixed(1) : "--";
+    const p60 = latestPreds?.list?.[1]?.value ? latestPreds.list[1].value.toFixed(1) : "--";
+    await fetch(`${API_BASE}/api/save`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value: last.value, f30: p30, f60: p60, source: sourceSelect.value })
+    });
+    fetchHistory();
+  };
+
+  const clearHistory = async () => {
+    await fetch(`${API_BASE}/api/history`, { method: "DELETE" });
+    fetchHistory();
+  };
+
+  const clearDanger = async () => {
+    await fetch(`${API_BASE}/api/danger`, { method: "DELETE" });
+    fetchDanger();
+  };
+
+  // 预测 UI
+  const updateForecastUI = (preds) => {
+    if (!preds) {
+      forecast30.textContent = "--.--";
+      forecast60.textContent = "--.--";
+      forecast30Tag.textContent = "趋势：--";
+      forecast60Tag.textContent = "趋势：--";
+      return;
+    }
+    const [p30, p60] = preds.list;
+    forecast30.textContent = p30.value.toFixed(1);
+    forecast60.textContent = p60.value.toFixed(1);
+    const trendLabel = preds.trend === "上升" ? "轻度上升" : preds.trend === "下降" ? "轻度下降" : "相对平稳";
+    forecast30Tag.textContent = `趋势：${trendLabel}`;
+    forecast60Tag.textContent = `趋势：${trendLabel}`;
+  };
+
+  // 视图范围
+  const getViewWindow = () => {
+    if (!dataPoints.length) return null;
+    const lastTs = dataPoints[dataPoints.length - 1].ts;
+    const earliest = dataPoints[0].ts;
+    let windowEnd = lastTs - viewBackMinutes * 60 * 1000;
+    let windowStart = windowEnd - VIEW_WINDOW * 60 * 1000;
+    if (windowStart < earliest) {
+      windowStart = earliest;
+      windowEnd = windowStart + VIEW_WINDOW * 60 * 1000;
+    }
+    return { start: windowStart, end: windowEnd };
+  };
+  const getVisiblePoints = () => {
+    const range = getViewWindow();
+    if (!range) return [];
+    return dataPoints.filter((p) => p.ts >= range.start && p.ts <= range.end);
   };
 
   // 绘图
-  let hoverTarget = null;
-
   const renderChart = (points, predsExternal) => {
     if (!chartCtx) return;
     const rect = chartCanvas.getBoundingClientRect();
@@ -303,15 +215,15 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     const pad = 28;
-    const preds = viewBackMinutes === 0 ? predsExternal || computePredictions() : null;
+    const preds = viewBackMinutes === 0 ? predsExternal || latestPreds : null;
     const baseMaxTs = range.end;
-    const maxPredTs = preds && preds.list && preds.list.length ? preds.list[preds.list.length - 1].ts : baseMaxTs;
+    const maxPredTs = preds?.list?.length ? preds.list[preds.list.length - 1].ts : baseMaxTs;
     const minTs = range.start;
     const maxTs = viewBackMinutes === 0 ? Math.max(baseMaxTs, maxPredTs) : baseMaxTs;
-    const spanTs = Math.max(maxTs - minTs, STEP_MS);
+    const spanTs = Math.max(maxTs - minTs, 1);
 
     const values = points.map((p) => p.value);
-    if (preds && preds.list) preds.list.forEach((p) => values.push(p.value));
+    if (preds?.list) preds.list.forEach((p) => values.push(p.value));
     const minVal = Math.min(...values);
     const maxVal = Math.max(...values);
     const yMin = Math.max(MIN_VAL - 10, minVal - 10);
@@ -321,21 +233,21 @@ document.addEventListener("DOMContentLoaded", () => {
     const xScale = (ts) => pad + ((ts - minTs) / spanTs) * (w - pad * 2);
     const yScale = (val) => h - pad - ((val - yMin) / ySpan) * (h - pad * 2);
 
-    // 背景色块：历史浅蓝，当前±5min浅绿，未来淡黄
+    // 背景色块
     const lastTs = points[points.length - 1].ts;
     const histEndX = xScale(lastTs);
-    const greenStartX = xScale(lastTs - 5 * 60 * 1000);
-    const greenEndX = xScale(lastTs + 5 * 60 * 1000);
     chartCtx.fillStyle = "rgba(59, 130, 246, 0.08)";
-    chartCtx.fillRect(pad, pad, Math.max(greenStartX - pad, 0), h - pad * 2);
-    if (viewBackMinutes === 0) {
-      chartCtx.fillStyle = "rgba(34, 197, 94, 0.12)";
-      chartCtx.fillRect(greenStartX, pad, greenEndX - greenStartX, h - pad * 2);
-    }
-    if (maxTs > lastTs && viewBackMinutes === 0) {
+    chartCtx.fillRect(pad, pad, Math.max(histEndX - pad, 0), h - pad * 2);
+    if (viewBackMinutes === 0 && preds?.list) {
       const futureXEnd = xScale(maxTs);
       chartCtx.fillStyle = "rgba(250, 204, 21, 0.12)";
-      chartCtx.fillRect(greenEndX, pad, futureXEnd - greenEndX, h - pad * 2);
+      chartCtx.fillRect(histEndX, pad, futureXEnd - histEndX, h - pad * 2);
+    }
+    if (viewBackMinutes === 0) {
+      const greenStartX = xScale(lastTs - 5 * 60 * 1000);
+      const greenEndX = xScale(lastTs + 5 * 60 * 1000);
+      chartCtx.fillStyle = "rgba(34, 197, 94, 0.12)";
+      chartCtx.fillRect(greenStartX, pad, greenEndX - greenStartX, h - pad * 2);
     }
 
     // 网格
@@ -390,7 +302,7 @@ document.addEventListener("DOMContentLoaded", () => {
     chartCtx.fillText(`${last.value.toFixed(1)} mg/dL`, lx + 8, ly - 8);
 
     // 预测点
-    if (preds && preds.list) {
+    if (preds?.list) {
       preds.list.forEach((p) => {
         const x = xScale(p.ts);
         const y = yScale(p.value);
@@ -408,27 +320,18 @@ document.addEventListener("DOMContentLoaded", () => {
     // 坐标轴刻度
     chartCtx.fillStyle = "#6b7280";
     chartCtx.font = "12px sans-serif";
-    for (let i = 0; i <= gridY; i++) {
-      const val = yMin + (ySpan / gridY) * i;
+    const gridYLabels = 4;
+    for (let i = 0; i <= gridYLabels; i++) {
+      const val = yMin + (ySpan / gridYLabels) * i;
       const y = yScale(val);
       chartCtx.fillText(val.toFixed(0), 4, y + 4);
     }
-    for (let i = 0; i <= gridX; i++) {
-      const ts = minTs + (spanTs / gridX) * i;
-      const x = xScale(ts);
-      chartCtx.fillText(formatTime(new Date(ts)), x - 22, h - 6);
+    const gridXLabels = 4;
+    for (let i = 0; i <= gridXLabels; i++) {
+      const ts = minTs + (spanTs / gridXLabels) * i;
+      const x = pad + ((ts - minTs) / spanTs) * (w - pad * 2);
+      chartCtx.fillText(formatTime(ts), x - 22, h - 6);
     }
-
-    // 存储渲染快照用于 hover
-    lastRenderSnapshot = {
-      pointsPixels: points.map((p) => ({ x: xScale(p.ts), y: yScale(p.value), ts: p.ts, value: p.value, label: "当前" })),
-      predsPixels: preds?.list
-        ? preds.list.map((p) => ({ x: xScale(p.ts), y: yScale(p.value), ts: p.ts, value: p.value, label: p.label, color: p.color }))
-        : [],
-      pad,
-      w,
-      h,
-    };
 
     // Hover 叠加
     if (hoverTarget) {
@@ -439,14 +342,21 @@ document.addEventListener("DOMContentLoaded", () => {
       chartCtx.lineTo(hoverTarget.x, h - pad);
       chartCtx.stroke();
       chartCtx.setLineDash([]);
-      chartCtx.fillStyle = "#111827";
-      chartCtx.font = "12px sans-serif";
-      chartCtx.fillText(formatDateTime(hoverTarget.ts), hoverTarget.x - 40, pad - 8);
       chartCtx.fillStyle = hoverTarget.color || "#2563eb";
       chartCtx.beginPath();
       chartCtx.arc(hoverTarget.x, hoverTarget.y, 6, 0, Math.PI * 2);
       chartCtx.fill();
+      chartCtx.fillStyle = "#111827";
+      chartCtx.fillText(formatDateTime(hoverTarget.ts), hoverTarget.x - 40, pad - 8);
     }
+
+    // 存储用于 hover
+    lastRenderSnapshot = {
+      pointsPixels: points.map((p) => ({ x: xScale(p.ts), y: yScale(p.value), ts: p.ts, value: p.value, label: "当前" })),
+      predsPixels: preds?.list
+        ? preds.list.map((p) => ({ x: xScale(p.ts), y: yScale(p.value), ts: p.ts, value: p.value, label: p.label, color: p.color }))
+        : []
+    };
   };
 
   const adjustCanvas = () => {
@@ -460,125 +370,8 @@ document.addEventListener("DOMContentLoaded", () => {
     renderChart(getVisiblePoints(), latestPreds);
   };
 
-  // 模拟流程
-  const updateOverview = (val, ts) => {
-    currentGlucose.textContent = val.toFixed(1);
-    lastUpdateTime.textContent = `最近更新：${formatTime(new Date(ts))}`;
-    updateRangeTag(val);
-  };
-
-  const addDataPoint = () => {
-    const last = dataPoints[dataPoints.length - 1];
-    const nextTs = last ? last.ts + STEP_MS : Date.now();
-    const nextVal = computeNextValue(last ? last.value : BASELINE);
-    dataPoints.push({ ts: nextTs, value: nextVal });
-    pruneOld();
-    updateOverview(nextVal, nextTs);
-    latestPreds = computePredictions();
-    updateForecastUI(latestPreds);
-    advice.textContent = buildAdvice(nextVal, latestPreds);
-    checkAndLogDanger(nextVal, latestPreds);
-    renderChart(getVisiblePoints(), latestPreds);
-    console.log(`[模拟] ${formatTime(new Date(nextTs))} -> ${nextVal} mg/dL`);
-  };
-
-  const seedInitialData = () => {
-    const now = Date.now();
-    const startTs = now - RETAIN_MINUTES * 60 * 1000;
-    let val = BASELINE;
-    for (let ts = startTs; ts <= now; ts += STEP_MS) {
-      val = computeNextValue(val);
-      dataPoints.push({ ts, value: val });
-    }
-    const last = dataPoints[dataPoints.length - 1];
-    updateOverview(last.value, last.ts);
-    latestPreds = computePredictions();
-    updateForecastUI(latestPreds);
-    advice.textContent = buildAdvice(last.value, latestPreds);
-    renderDanger();
-  };
-
-  const startSimulation = () => {
-    if (sourceSelect.value !== "simulated") {
-      setButtonState("running");
-      setStatusDot("running");
-      updateStatusText("running");
-      console.warn("当前选择非模拟数据。真实设备接入后再开始接收。");
-      return;
-    }
-    if (simTimer) return;
-    setButtonState("running");
-    setStatusDot("running");
-    updateStatusText("running");
-    addDataPoint();
-    simTimer = setInterval(() => addDataPoint(), SIM_INTERVAL_MS);
-  };
-
-  const pauseSimulation = () => {
-    if (simTimer) {
-      clearInterval(simTimer);
-      simTimer = null;
-    }
-    setButtonState("paused");
-    setStatusDot("paused");
-    updateStatusText("paused");
-  };
-
-  // 历史保存
-  const saveSnapshot = () => {
-    if (!dataPoints.length) return;
-    const last = dataPoints[dataPoints.length - 1];
-    const preds = latestPreds || computePredictions();
-    const entry = {
-      ts: last.ts,
-      value: last.value,
-      f30: preds?.list?.[0]?.value ? preds.list[0].value.toFixed(1) : "--",
-      f60: preds?.list?.[1]?.value ? preds.list[1].value.toFixed(1) : "--",
-      source: sourceSelect.options[sourceSelect.selectedIndex].textContent.trim(),
-    };
-    const list = loadHistory();
-    list.push(entry);
-    saveHistory(list);
-    renderHistory();
-  };
-
-  // 事件绑定
-  toggleRunBtn.addEventListener("click", () => {
-    const state = toggleRunBtn.dataset.state;
-    if (state === "paused") startSimulation();
-    else pauseSimulation();
-  });
-
-  sourceSelect.addEventListener("change", () => {
-    pauseSimulation();
-    updateStatusText("paused");
-  });
-
-  saveSnapshotBtn.addEventListener("click", saveSnapshot);
-  viewHistoryBtn.addEventListener("click", () => {
-    const target = document.getElementById("history");
-    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
-  });
-  clearHistoryBtn.addEventListener("click", () => {
-    saveHistory([]);
-    renderHistory();
-  });
-  toggleHistoryBtn.addEventListener("click", () => {
-    historyCollapsed = !historyCollapsed;
-    historyTableWrapper.style.display = historyCollapsed ? "none" : "block";
-  });
-  clearDangerBtn.addEventListener("click", () => {
-    saveDanger([]);
-    renderDanger();
-  });
-
-  windowSlider.addEventListener("input", (e) => {
-    const val = Number(e.target.value);
-    viewBackMinutes = clamp(SLIDER_MAX - val, 0, VIEW_MAX_BACK);
-    renderChart(getVisiblePoints(), latestPreds);
-  });
-
-  // Hover 监听
+  // Hover
+  let hoverTarget = null;
   chartCanvas.addEventListener("mousemove", (e) => {
     if (!lastRenderSnapshot) return;
     const rect = chartCanvas.getBoundingClientRect();
@@ -604,7 +397,49 @@ document.addEventListener("DOMContentLoaded", () => {
     renderChart(getVisiblePoints(), latestPreds);
   });
 
-  // 初始化占位
+  // 事件
+  toggleRunBtn.addEventListener("click", async () => {
+    const state = toggleRunBtn.dataset.state;
+    if (state === "paused") {
+      setButtonState("running");
+      setStatusDot("running");
+      await fetchData();
+      if (!simTimer) simTimer = setInterval(fetchData, 10_000);
+    } else {
+      setButtonState("paused");
+      setStatusDot("paused");
+      if (simTimer) {
+        clearInterval(simTimer);
+        simTimer = null;
+      }
+    }
+  });
+
+  sourceSelect.addEventListener("change", async () => {
+    await fetchData();
+  });
+
+  saveSnapshotBtn.addEventListener("click", saveSnapshot);
+  viewHistoryBtn.addEventListener("click", () => {
+    const target = document.getElementById("history");
+    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+  clearHistoryBtn.addEventListener("click", clearHistory);
+  toggleHistoryBtn.addEventListener("click", () => {
+    const hidden = historyTableWrapper.style.display === "none";
+    historyTableWrapper.style.display = hidden ? "block" : "none";
+  });
+  clearDangerBtn.addEventListener("click", clearDanger);
+
+  windowSlider.addEventListener("input", (e) => {
+    const val = Number(e.target.value);
+    viewBackMinutes = clamp(SLIDER_MAX - val, 0, VIEW_MAX_BACK);
+    renderChart(getVisiblePoints(), latestPreds);
+  });
+
+  window.addEventListener("resize", adjustCanvas);
+
+  // 初始化
   currentGlucose.textContent = "--.--";
   dataSourceStatus.textContent = "模拟数据待接入";
   forecast30.textContent = "--.--";
@@ -613,18 +448,20 @@ document.addEventListener("DOMContentLoaded", () => {
   rangeTag.textContent = "范围评估：--";
   lastUpdateTime.textContent = "最近更新：--:--";
   windowSlider.value = SLIDER_MAX;
-
-  // 默认状态与数据
   setButtonState("paused");
   setStatusDot("paused");
-  sourceSelect.value = "simulated";
-  updateStatusText("paused");
 
-  // 预填充 24h 模拟数据并渲染
-  seedInitialData();
-  adjustCanvas();
-  window.addEventListener("resize", adjustCanvas);
-  renderChart(getVisiblePoints(), latestPreds);
-  renderHistory();
-  renderDanger();
+  // 首次加载数据
+  fetchData().then(() => {
+    adjustCanvas();
+    fetchHistory();
+    fetchDanger();
+  });
+
+  // 辅助函数
+  function updateOverview(val, ts) {
+    currentGlucose.textContent = val.toFixed(1);
+    lastUpdateTime.textContent = `最近更新：${formatTime(ts)}`;
+    updateRangeTag(val);
+  }
 });
