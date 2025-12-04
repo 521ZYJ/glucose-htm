@@ -1,6 +1,6 @@
 // 前端逻辑（改为从本地后端获取数据并同步历史/危险记录）
 document.addEventListener("DOMContentLoaded", () => {
-  const API_BASE = "http://10.89.205.185:3000";
+  const API_BASE = "http://192.168.94.45:3000";
   const $ = (id) => document.getElementById(id);
 
   // UI 元素
